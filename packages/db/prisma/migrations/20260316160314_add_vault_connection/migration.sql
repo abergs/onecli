@@ -2,9 +2,10 @@
 CREATE TABLE "VaultConnection" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
-    "fingerprint" TEXT NOT NULL,
+    "provider" TEXT NOT NULL,
     "name" TEXT,
-    "status" TEXT NOT NULL DEFAULT 'paired',
+    "status" TEXT NOT NULL,
+    "connectionData" JSONB,
     "lastConnectedAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
@@ -13,7 +14,7 @@ CREATE TABLE "VaultConnection" (
 );
 
 -- CreateIndex
-CREATE UNIQUE INDEX "VaultConnection_userId_key" ON "VaultConnection"("userId");
+CREATE UNIQUE INDEX "VaultConnection_userId_provider_key" ON "VaultConnection"("userId", "provider");
 
 -- AddForeignKey
 ALTER TABLE "VaultConnection" ADD CONSTRAINT "VaultConnection_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;

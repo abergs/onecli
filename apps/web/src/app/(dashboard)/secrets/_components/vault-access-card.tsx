@@ -30,10 +30,12 @@ import {
   useVaultStatus,
   useVaultPair,
   useVaultDisconnect,
+  type BitwardenStatusData,
 } from "@/hooks/use-vault-status";
 
 export const VaultAccessCard = () => {
-  const { status, loading, isPaired, isReady, fetchStatus } = useVaultStatus();
+  const { status, loading, isPaired, isReady, fetchStatus } =
+    useVaultStatus<BitwardenStatusData>();
   const { pair, pairing } = useVaultPair(fetchStatus);
   const { disconnect, disconnecting } = useVaultDisconnect(fetchStatus);
   const [pairingCode, setPairingCode] = useState("");
@@ -96,24 +98,15 @@ export const VaultAccessCard = () => {
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
-          {status?.connection?.fingerprint && (
+          {status?.status_data?.fingerprint && (
             <div className="grid gap-1.5">
               <Label className="flex items-center gap-1.5">
                 <Fingerprint className="size-3.5" />
                 Device Fingerprint
               </Label>
               <code className="text-muted-foreground text-xs font-mono break-all">
-                {status.connection.fingerprint}
+                {status.status_data.fingerprint}
               </code>
-            </div>
-          )}
-
-          {status?.connection?.lastConnectedAt && (
-            <div className="grid gap-1.5">
-              <Label>Last Connected</Label>
-              <p className="text-muted-foreground text-sm">
-                {new Date(status.connection.lastConnectedAt).toLocaleString()}
-              </p>
             </div>
           )}
 

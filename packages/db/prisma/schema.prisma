@@ -21,7 +21,7 @@ model User {
 
   agents            Agent[]
   secrets           Secret[]
-  vaultConnection   VaultConnection?
+  vaultConnections  VaultConnection[]
 }
 
 model Agent {
@@ -55,12 +55,15 @@ model Secret {
 
 model VaultConnection {
   id              String    @id @default(cuid())
-  userId          String    @unique
-  fingerprint     String
+  userId          String
+  provider        String
   name            String?
-  status          String    @default("paired")
+  status          String
+  connectionData  Json?
   lastConnectedAt DateTime?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
   user            User      @relation(fields: [userId], references: [id])
+
+  @@unique([userId, provider])
 }

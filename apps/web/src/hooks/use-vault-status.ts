@@ -2,52 +2,52 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
+import { GATEWAY_URL, getGatewayFetchOptions } from "@/lib/gateway-auth";
 
-export interface VaultStatus {
-  connection: {
-    fingerprint: string;
-    name: string | null;
-    status: string;
-    lastConnectedAt: string | null;
-    createdAt: string;
-  } | null;
-  gateway: {
-    paired: boolean;
-    ready: boolean;
-    fingerprint: string;
-    remote_fingerprint: string | null;
-    relay_url: string;
-  } | null;
+export interface VaultStatus<T = unknown> {
+  connected: boolean;
+  name: string | null;
+  status_data: T | null;
 }
 
-export const useVaultStatus = () => {
-  const [status, setStatus] = useState<VaultStatus | null>(null);
+export interface BitwardenStatusData {
+  fingerprint: string;
+}
+
+export const useVaultStatus = <T = unknown>(provider: string = "bitwarden") => {
+  const [status, setStatus] = useState<VaultStatus<T> | null>(null);
   const [loading, setLoading] = useState(true);
 
   const fetchStatus = useCallback(async () => {
     try {
-      const resp = await fetch("/api/vault/status");
+      const resp = await fetch(
+        `${GATEWAY_URL}/api/vault/${provider}/status`,
+        getGatewayFetchOptions(),
+      );
       if (resp.ok) {
         setStatus(await resp.json());
       }
     } catch {
-      // Status endpoint unavailable
+      // Gateway unreachable
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [provider]);
 
   useEffect(() => {
     fetchStatus();
   }, [fetchStatus]);
 
-  const isPaired = status?.connection != null || status?.gateway?.paired;
-  const isReady = status?.gateway?.ready ?? false;
+  const isPaired = status?.connected || status?.status_data != null;
+  const isReady = status?.connected ?? false;
 
   return { status, loading, isPaired, isReady, fetchStatus };
 };
 
-export const useVaultPair = (fetchStatus: () => Promise<void>) => {
+export const useVaultPair = (
+  fetchStatus: () => Promise<void>,
+  provider: string = "bitwarden",
+) => {
   const [pairing, setPairing] = useState(false);
 
   const pair = useCallback(
@@ -59,13 +59,14 @@ export const useVaultPair = (fetchStatus: () => Promise<void>) => {
 
       setPairing(true);
       try {
-        const resp = await fetch("/api/vault/pair", {
+        const resp = await fetch(`${GATEWAY_URL}/api/vault/${provider}/pair`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             psk_hex: pskHex,
             fingerprint_hex: fingerprintHex,
           }),
+          ...getGatewayFetchOptions(),
         });
 
         if (resp.ok) {
@@ -84,19 +85,25 @@ export const useVaultPair = (fetchStatus: () => Promise<void>) => {
         setPairing(false);
       }
     },
-    [fetchStatus],
+    [fetchStatus, provider],
   );
 
   return { pair, pairing };
 };
 
-export const useVaultDisconnect = (fetchStatus: () => Promise<void>) => {
+export const useVaultDisconnect = (
+  fetchStatus: () => Promise<void>,
+  provider: string = "bitwarden",
+) => {
   const [disconnecting, setDisconnecting] = useState(false);
 
   const disconnect = useCallback(async () => {
     setDisconnecting(true);
     try {
-      const resp = await fetch("/api/vault/disconnect", { method: "DELETE" });
+      const resp = await fetch(`${GATEWAY_URL}/api/vault/${provider}/pair`, {
+        method: "DELETE",
+        ...getGatewayFetchOptions(),
+      });
       if (resp.ok) {
         toast.success("Vault disconnected");
         await fetchStatus();
@@ -108,7 +115,7 @@ export const useVaultDisconnect = (fetchStatus: () => Promise<void>) => {
     } finally {
       setDisconnecting(false);
     }
-  }, [fetchStatus]);
+  }, [fetchStatus, provider]);
 
   return { disconnect, disconnecting };
 };

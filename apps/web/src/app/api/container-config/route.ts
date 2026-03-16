@@ -3,10 +3,19 @@ import { db } from "@onecli/db";
 import { validateApiKey } from "@/lib/validate-api-key";
 import { getServerSession } from "@/lib/auth/server";
 import { loadCaCertificate } from "@/lib/gateway-ca";
-import { getGatewayHost } from "@/lib/gateway-secret";
 
 const GATEWAY_PORT = process.env.GATEWAY_PORT ?? "10255";
 const CA_CONTAINER_PATH = "/tmp/onecli-gateway-ca.pem";
+
+const isCloud = process.env.NEXT_PUBLIC_EDITION === "cloud";
+
+const getGatewayHost = (): string => {
+  if (process.env.GATEWAY_HOST) return process.env.GATEWAY_HOST;
+  if (isCloud) {
+    throw new Error("GATEWAY_HOST env var is required in cloud edition");
+  }
+  return "host.docker.internal";
+};
 
 /**
  * GET /api/container-config

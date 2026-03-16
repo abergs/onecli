@@ -11,23 +11,21 @@ mod crypto;
 mod db;
 mod gateway;
 mod inject;
-mod remote;
-mod remote_api;
-mod remote_mapping;
-mod remote_store;
+mod vault;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use tracing::{info, warn};
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use crate::ca::CertificateAuthority;
 use crate::connect::PolicyEngine;
 use crate::gateway::GatewayServer;
-use crate::remote::{RemoteAccessConfig, RemoteAccessManager};
+use crate::vault::bitwarden::{BitwardenConfig, BitwardenVaultProvider};
+use crate::vault::VaultService;
 
 #[derive(Parser)]
 #[command(
@@ -42,14 +40,6 @@ struct Cli {
     /// Data directory for CA certificates and persistent state.
     #[arg(long, default_value = default_data_dir())]
     data_dir: PathBuf,
-
-    /// Enable remote access (Bitwarden vault credential injection).
-    #[arg(long, default_value = "false")]
-    enable_remote_access: bool,
-
-    /// WebSocket proxy URL for remote access connections.
-    #[arg(long, default_value = "wss://rat1.lesspassword.dev")]
-    proxy_url: String,
 }
 
 fn default_data_dir() -> &'static str {
@@ -93,35 +83,20 @@ async fn main() -> Result<()> {
 
     let policy_engine = Arc::new(PolicyEngine { pool, crypto });
 
-    // Initialize remote access manager if enabled
-    let remote_access = if cli.enable_remote_access {
-        info!(proxy_url = %cli.proxy_url, "initializing remote access");
-        let config = RemoteAccessConfig {
-            proxy_url: cli.proxy_url,
-        };
-        match RemoteAccessManager::new(config, &data_dir) {
-            Ok(manager) => {
-                let manager = std::sync::Arc::new(manager);
-                manager.try_restore_session().await;
-                Some(manager)
-            }
-            Err(e) => {
-                warn!(error = %e, "failed to initialize remote access — continuing without it");
-                None
-            }
-        }
-    } else {
-        None
-    };
+    // Initialize vault service with Bitwarden provider
+    let proxy_url = std::env::var("BITWARDEN_PROXY_URL")
+        .unwrap_or_else(|_| "wss://rat1.lesspassword.dev".to_string());
+    let bitwarden =
+        BitwardenVaultProvider::new(BitwardenConfig { proxy_url }, policy_engine.pool.clone());
+    let vault_service = Arc::new(VaultService::new(
+        vec![Box::new(bitwarden)],
+        policy_engine.pool.clone(),
+    ));
 
-    info!(
-        port = cli.port,
-        remote_access_enabled = remote_access.is_some(),
-        "gateway ready"
-    );
+    info!(port = cli.port, "gateway ready");
 
     // Start the gateway server (blocks forever)
-    let server = GatewayServer::new(ca, cli.port, policy_engine, remote_access);
+    let server = GatewayServer::new(ca, cli.port, policy_engine, vault_service);
     server.run().await
 }
 

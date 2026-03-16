@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "build": "cargo build --release",
-    "dev": "cargo run -- --enable-remote-access --proxy-url wss://rat1.lesspassword.dev",
+    "dev": "cargo run",
     "check": "cargo clippy -- -D warnings && cargo fmt --check",
     "lint": "cargo fmt --check",
     "format:check": "cargo fmt --check",

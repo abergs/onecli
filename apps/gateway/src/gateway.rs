@@ -15,7 +15,7 @@ use axum::Router;
 use dashmap::DashMap;
 use futures_util::TryStreamExt;
 use http_body::Body as HttpBody;
-use http_body_util::{BodyExt, StreamBody};
+use http_body_util::StreamBody;
 use hyper::body::{Bytes, Frame, Incoming};
 use hyper::header::{HeaderName, HeaderValue};
 use hyper::server::conn::http1;
@@ -32,8 +32,7 @@ use crate::auth::AuthUser;
 use crate::ca::CertificateAuthority;
 use crate::connect::{self, CachedConnect, ConnectCacheKey, ConnectError, PolicyEngine};
 use crate::inject::{self, ConnectRule};
-use crate::remote::RemoteAccessManager;
-use crate::remote_mapping;
+use crate::vault;
 
 // ── GatewayState ───────────────────────────────────────────────────────
 
@@ -44,8 +43,8 @@ pub(crate) struct GatewayState {
     pub http_client: reqwest::Client,
     pub policy_engine: Arc<PolicyEngine>,
     pub connect_cache: Arc<DashMap<ConnectCacheKey, CachedConnect>>,
-    /// Remote access manager for Bitwarden vault credential injection.
-    pub remote_access: Option<Arc<RemoteAccessManager>>,
+    /// Provider-agnostic vault service for credential fetching.
+    pub vault_service: Arc<vault::VaultService>,
 }
 
 // ── GatewayServer ───────────────────────────────────────────────────────
@@ -60,7 +59,7 @@ impl GatewayServer {
         ca: CertificateAuthority,
         port: u16,
         policy_engine: Arc<PolicyEngine>,
-        remote_access: Option<Arc<RemoteAccessManager>>,
+        vault_service: Arc<vault::VaultService>,
     ) -> Self {
         let state = GatewayState {
             ca: Arc::new(ca),
@@ -72,7 +71,7 @@ impl GatewayServer {
                 .expect("build HTTP client"),
             policy_engine,
             connect_cache: Arc::new(DashMap::new()),
-            remote_access,
+            vault_service,
         };
 
         Self { state, port }
@@ -110,6 +109,18 @@ impl GatewayServer {
         let axum_router = Router::new()
             .route("/healthz", axum::routing::get(healthz))
             .route("/me", axum::routing::get(me))
+            .route(
+                "/api/vault/{provider}/pair",
+                axum::routing::post(vault::api::vault_pair),
+            )
+            .route(
+                "/api/vault/{provider}/status",
+                axum::routing::get(vault::api::vault_status),
+            )
+            .route(
+                "/api/vault/{provider}/pair",
+                axum::routing::delete(vault::api::vault_disconnect),
+            )
             .layer(cors_layer)
             .fallback(fallback)
             .with_state(self.state.clone());
@@ -148,9 +159,9 @@ async fn fallback() -> StatusCode {
 
 /// Handle a single client connection.
 ///
-/// Uses a `service_fn` wrapper that intercepts CONNECT requests and `/api/remote/`
-/// requests before they reach the Axum router (CONNECT URIs like `host:port` don't
-/// match Axum's path-based routing, and remote API needs access to gateway state).
+/// Uses a `service_fn` wrapper that intercepts CONNECT requests before they reach
+/// the Axum router (CONNECT URIs like `host:port` don't match Axum's path-based routing).
+/// All other HTTP routes (vault API, healthz, etc.) go through the Axum router.
 async fn handle_connection(
     stream: TcpStream,
     peer_addr: SocketAddr,
@@ -170,10 +181,8 @@ async fn handle_connection(
                 async move {
                     if req.method() == Method::CONNECT {
                         handle_connect(req, peer_addr, state).await
-                    } else if req.uri().path().starts_with("/api/remote/") {
-                        handle_remote_request(req, state).await
                     } else {
-                        // Delegate to the Axum router for all non-CONNECT requests.
+                        // Axum handles all non-CONNECT routes (healthz, vault API, fallback)
                         let resp: Response<axum::body::Body> = router
                             .oneshot(req)
                             .await
@@ -186,41 +195,6 @@ async fn handle_connection(
         .with_upgrades()
         .await
         .context("serving HTTP connection")
-}
-
-// ── Remote access API handling ──────────────────────────────────────────
-
-/// Handle `/api/remote/*` requests for remote access management.
-async fn handle_remote_request(
-    req: Request<Incoming>,
-    state: GatewayState,
-) -> Result<Response<axum::body::Body>, anyhow::Error> {
-    if let Some(ref ra) = state.remote_access {
-        let (parts, body) = req.into_parts();
-        let body_bytes = body
-            .collect()
-            .await
-            .map(|c| c.to_bytes().to_vec())
-            .unwrap_or_default();
-        let req = Request::from_parts(parts, ());
-
-        if let Some(resp) =
-            crate::remote_api::handle_remote_api(&req, &body_bytes, ra, None)
-                .await
-        {
-            return Ok(resp.map(axum::body::Body::new));
-        }
-
-        let mut resp = Response::new(axum::body::Body::from(r#"{"error":"not found"}"#));
-        *resp.status_mut() = StatusCode::NOT_FOUND;
-        Ok(resp)
-    } else {
-        let mut resp = Response::new(axum::body::Body::from(
-            r#"{"error":"remote access not enabled"}"#,
-        ));
-        *resp.status_mut() = StatusCode::NOT_FOUND;
-        Ok(resp)
-    }
 }
 
 // ── CONNECT handling ────────────────────────────────────────────────────
@@ -242,7 +216,7 @@ async fn handle_connect(
     // Extract agent token from Proxy-Authorization header.
     let agent_token = inject::extract_agent_token(&req).filter(|t| !t.is_empty());
 
-    let (mut intercept, mut rules, _user_id) = if let Some(ref token) = agent_token {
+    let (mut intercept, mut rules, user_id) = if let Some(ref token) = agent_token {
         match connect::resolve(token, &hostname, &state.policy_engine, &state.connect_cache).await {
             Ok(resp) => (resp.intercept, resp.rules, resp.user_id),
             Err(ConnectError::InvalidToken) => {
@@ -261,18 +235,18 @@ async fn handle_connect(
         (false, vec![], None)
     };
 
-    // Remote access fallback: if no rules matched from the DB and remote access is paired,
-    // try to fetch credentials from the user's Bitwarden vault.
+    // Vault fallback: if no DB secrets matched, try vault providers for this user.
     if !intercept {
-        if let Some(ref ra) = state.remote_access {
-            if let Some(cred) = ra.request_credential(&hostname).await {
-                let remote_rules = remote_mapping::credential_to_rules(&hostname, &cred);
-                if !remote_rules.is_empty() {
+        if let Some(ref uid) = user_id {
+            if let Some(cred) = state.vault_service.request_credential(uid, &hostname).await {
+                let vault_rules = inject::vault_credential_to_rules(&hostname, &cred);
+                if !vault_rules.is_empty() {
                     intercept = true;
-                    rules = remote_rules;
+                    rules = vault_rules;
                     info!(
                         host = %hostname,
-                        "using remote access credential from Bitwarden vault"
+                        user_id = %uid,
+                        "using vault credential"
                     );
                 }
             }
