@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use ap_client::{
-    CredentialData, DefaultProxyClient, IdentityFingerprint, IdentityProvider, Psk, RemoteClient,
-    RemoteClientEvent,
+    CredentialData, CredentialQuery, DefaultProxyClient, IdentityFingerprint, IdentityProvider,
+    Psk, RemoteClient, RemoteClientEvent,
 };
 use ap_proxy_client::ProxyClientConfig;
 use async_trait::async_trait;
@@ -235,7 +235,8 @@ impl BitwardenVaultProvider {
     }
 
     /// Create a connected `RemoteClient` for a user session.
-    /// Uses the cached `connection_data` from the session — no extra DB read.
+    /// Always passes the identity's key_data to the session store so write-throughs
+    /// never null it out — even for fresh pairings where connection_data is None.
     async fn create_and_connect_client(
         &self,
         user_id: &str,
@@ -252,10 +253,7 @@ impl BitwardenVaultProvider {
         };
         let proxy_client = DefaultProxyClient::new(proxy_config);
 
-        let key_data = session
-            .connection_data
-            .as_ref()
-            .and_then(|cd| cd.key_data.clone());
+        let key_data = Some(session.identity.to_cose());
         let identity_provider = session.identity.clone_provider();
         let session_store = BitwardenSessionStore::new(
             self.pool.clone(),
@@ -300,8 +298,8 @@ impl BitwardenVaultProvider {
                             "bitwarden: ready"
                         );
                     }
-                    RemoteClientEvent::CredentialReceived { domain, .. } => {
-                        info!(user_id = %user_id, domain = %domain, "bitwarden: credential received");
+                    RemoteClientEvent::CredentialReceived { credential, .. } => {
+                        info!(user_id = %user_id, credential = ?credential, "bitwarden: credential received");
                     }
                     RemoteClientEvent::Error { message, context } => {
                         warn!(
@@ -348,6 +346,24 @@ impl VaultProvider for BitwardenVaultProvider {
             Some(s) => s,
             None => self.create_pairing_session(user_id),
         };
+
+        // Create the DB row BEFORE pairing so that save_transport_state's
+        // UPDATE has a row to write to. key_data + fingerprint go in now;
+        // transport_state will be added by save_transport_state during pair_with_psk.
+        let initial_cd = BitwardenConnectionData {
+            fingerprint: Some(fingerprint_hex.to_string()),
+            key_data: Some(session.identity.to_cose()),
+            transport_state: None,
+        };
+        db::upsert_vault_connection(
+            &self.pool,
+            user_id,
+            "bitwarden",
+            "paired",
+            Some(&serde_json::to_value(&initial_cd)?),
+        )
+        .await?;
+
         let mut client = self.create_and_connect_client(user_id, &session).await?;
 
         client
@@ -363,16 +379,7 @@ impl VaultProvider for BitwardenVaultProvider {
 
         *session.client.lock().await = Some(client);
 
-        let cd = BitwardenConnectionData {
-            fingerprint: Some(fingerprint_hex.to_string()),
-            key_data: Some(session.identity.to_cose()),
-            transport_state: None, // Will be updated by SessionStore::save_transport_state
-        };
-
-        Ok(PairResult {
-            connection_data: serde_json::to_value(&cd)?,
-            display_name: None,
-        })
+        Ok(PairResult { display_name: None })
     }
 
     async fn request_credential(&self, user_id: &str, hostname: &str) -> Option<VaultCredential> {
@@ -438,8 +445,8 @@ impl VaultProvider for BitwardenVaultProvider {
             return None;
         }
 
-        let result =
-            tokio::time::timeout(REQUEST_TIMEOUT, client.request_credential(hostname)).await;
+        let query = CredentialQuery::Domain(hostname.to_string());
+        let result = tokio::time::timeout(REQUEST_TIMEOUT, client.request_credential(&query)).await;
 
         let cred = match result {
             Ok(Ok(cred)) => Some(cred),

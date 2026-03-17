@@ -26,8 +26,6 @@ pub(crate) struct VaultCredential {
 /// Result of a successful pairing operation.
 #[derive(Debug)]
 pub(crate) struct PairResult {
-    /// Provider-specific opaque data, stored as JSON in `VaultConnection.connectionData`.
-    pub connection_data: serde_json::Value,
     /// Human-readable name for the connection (shown in UI).
     pub display_name: Option<String>,
 }
@@ -90,7 +88,7 @@ impl VaultService {
         None
     }
 
-    /// Pair with a specific provider. Stores connection_data as JSON in DB.
+    /// Pair with a specific provider. The provider owns DB persistence.
     pub async fn pair(
         &self,
         user_id: &str,
@@ -98,18 +96,7 @@ impl VaultService {
         params: &serde_json::Value,
     ) -> Result<PairResult> {
         let p = self.find_provider(provider)?;
-        let result = p.pair(user_id, params).await?;
-
-        db::upsert_vault_connection(
-            &self.pool,
-            user_id,
-            provider,
-            "paired",
-            Some(&result.connection_data),
-        )
-        .await?;
-
-        Ok(result)
+        p.pair(user_id, params).await
     }
 
     /// Get status for a specific provider.
