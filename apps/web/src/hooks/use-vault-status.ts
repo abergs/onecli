@@ -12,6 +12,7 @@ export interface VaultStatus<T = unknown> {
 
 export interface BitwardenStatusData {
   fingerprint: string;
+  last_error: string | null;
 }
 
 export const useVaultStatus = <T = unknown>(provider: string = "bitwarden") => {

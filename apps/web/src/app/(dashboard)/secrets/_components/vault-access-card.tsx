@@ -1,7 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { Shield, Unlink, Link, Fingerprint } from "lucide-react";
+import {
+  Shield,
+  Unlink,
+  Link,
+  Fingerprint,
+  AlertCircle,
+  RefreshCw,
+  ExternalLink,
+} from "lucide-react";
 import {
   Card,
   CardContent,
@@ -33,6 +41,26 @@ import {
   type BitwardenStatusData,
 } from "@/hooks/use-vault-status";
 
+const statusBadge = (
+  isReady: boolean,
+  hasError: boolean,
+): { className: string; dotClassName: string; label: string } => {
+  if (hasError) {
+    return {
+      className:
+        "border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-400",
+      dotClassName: "bg-red-500",
+      label: "Error",
+    };
+  }
+  return {
+    className:
+      "border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950 dark:text-green-400",
+    dotClassName: "bg-green-500",
+    label: isReady ? "Connected" : "Paired",
+  };
+};
+
 export const VaultAccessCard = () => {
   const { status, loading, isPaired, isReady, fetchStatus } =
     useVaultStatus<BitwardenStatusData>();
@@ -57,19 +85,24 @@ export const VaultAccessCard = () => {
     return (
       <Card>
         <CardHeader>
-          <Skeleton className="h-5 w-36" />
-          <Skeleton className="h-4 w-64" />
+          <div className="flex items-center justify-between">
+            <Skeleton className="h-5 w-36" />
+            <Skeleton className="h-5 w-24 rounded-full" />
+          </div>
+          <Skeleton className="h-4 w-72" />
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
-          <Skeleton className="h-9 w-full" />
-          <Skeleton className="h-9 w-full" />
-          <Skeleton className="h-9 w-24" />
+          <Skeleton className="h-14 w-full" />
+          <Separator />
+          <Skeleton className="h-8 w-28" />
         </CardContent>
       </Card>
     );
   }
 
   if (isPaired) {
+    const badge = statusBadge(isReady, !!status?.status_data?.last_error);
+
     return (
       <Card>
         <CardHeader>
@@ -78,35 +111,59 @@ export const VaultAccessCard = () => {
               <Shield className="text-muted-foreground size-4" />
               <CardTitle>Bitwarden Vault</CardTitle>
             </div>
-            <Badge
-              variant="outline"
-              className={
-                isReady
-                  ? "border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950 dark:text-green-400"
-                  : "border-yellow-200 bg-yellow-50 text-yellow-700 dark:border-yellow-800 dark:bg-yellow-950 dark:text-yellow-400"
-              }
-            >
+            <Badge variant="outline" className={badge.className}>
               <span
-                className={`mr-1.5 inline-block size-1.5 rounded-full ${isReady ? "bg-green-500" : "bg-yellow-500 animate-pulse"}`}
+                className={`mr-1.5 inline-block size-1.5 rounded-full ${badge.dotClassName}`}
               />
-              {isReady ? "Connected" : "Reconnecting"}
+              {badge.label}
             </Badge>
           </div>
           <CardDescription>
-            Credentials will be fetched on-demand when no matching local secrets
-            are configured.
+            Credentials are fetched on-demand when no matching local secrets are
+            configured.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           {status?.status_data?.fingerprint && (
             <div className="grid gap-1.5">
-              <Label className="flex items-center gap-1.5">
-                <Fingerprint className="size-3.5" />
+              <Label className="text-muted-foreground flex items-center gap-1.5 text-xs font-normal">
+                <Fingerprint className="size-3" />
                 Device Fingerprint
               </Label>
-              <code className="text-muted-foreground text-xs font-mono break-all">
+              <code className="bg-muted text-muted-foreground rounded px-2 py-1.5 font-mono text-xs break-all">
                 {status.status_data.fingerprint}
               </code>
+            </div>
+          )}
+
+          {status?.status_data?.last_error && (
+            <div className="bg-destructive/10 text-destructive flex items-start gap-2 rounded-md border border-red-200 p-3 text-sm dark:border-red-900">
+              <AlertCircle className="mt-0.5 size-4 shrink-0" />
+              <div className="grid gap-1.5">
+                <span>{status.status_data.last_error}</span>
+                <p className="text-muted-foreground text-xs">
+                  Make sure{" "}
+                  <code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">
+                    aac listen
+                  </code>{" "}
+                  is running and your Bitwarden vault is unlocked.{" "}
+                  <a
+                    href="https://www.onecli.sh/docs/vaults/bitwarden#troubleshooting"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="underline underline-offset-2 hover:no-underline"
+                  >
+                    Troubleshooting
+                  </a>
+                </p>
+                <button
+                  onClick={fetchStatus}
+                  className="text-muted-foreground hover:text-foreground flex w-fit items-center gap-1 text-xs underline-offset-2 hover:underline"
+                >
+                  <RefreshCw className="size-3" />
+                  Refresh status
+                </button>
+              </div>
             </div>
           )}
 
@@ -154,9 +211,16 @@ export const VaultAccessCard = () => {
         </div>
         <CardDescription>
           Connect your Bitwarden vault to inject credentials on-demand without
-          storing them on the server. Run{" "}
-          <code className="text-xs">aac listen --psk</code> to generate a
-          pairing code.
+          storing them on the server.{" "}
+          <a
+            href="https://www.onecli.sh/docs/vaults/bitwarden"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-foreground inline-flex items-center gap-0.5 underline underline-offset-2 hover:no-underline"
+          >
+            Setup guide
+            <ExternalLink className="size-3" />
+          </a>
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
@@ -170,8 +234,11 @@ export const VaultAccessCard = () => {
             className="font-mono text-sm"
           />
           <p className="text-muted-foreground text-xs">
-            Paste the pairing code from{" "}
-            <code className="text-xs">aac listen --psk</code>.
+            Paste the full code from{" "}
+            <code className="bg-muted rounded px-1 py-0.5 text-xs font-mono">
+              aac listen --psk
+            </code>
+            .
           </p>
         </div>
         <Button

@@ -3,14 +3,13 @@
 //! Instead of files, identity keypair and session/transport state are stored in
 //! the `VaultConnection.connectionData` JSON column (scoped to `provider = "bitwarden"`).
 //!
-//! The `SessionStore` trait methods are synchronous (`fn`, not `async fn`).
-//! We use an in-memory cache with write-through: sessions are loaded into memory
-//! on construction, mutations update both memory and DB via `tokio::task::block_in_place`
-//! (requires multi-threaded tokio runtime, which the gateway uses).
+//! The `SessionStore` and `IdentityProvider` traits are async (as of ap-client 0.5),
+//! so we can await DB calls directly — no sync→async bridging needed.
 
 use ap_client::{IdentityFingerprint, IdentityProvider, RemoteClientError, SessionStore};
 use ap_noise::MultiDeviceTransport;
 use ap_proxy_protocol::IdentityKeyPair;
+use async_trait::async_trait;
 use sqlx::PgPool;
 use tracing::warn;
 
@@ -51,11 +50,17 @@ impl BitwardenIdentityProvider {
             keypair: self.keypair.clone(),
         }
     }
+
+    /// Get the fingerprint for this identity.
+    pub fn fingerprint(&self) -> IdentityFingerprint {
+        self.keypair.identity().fingerprint()
+    }
 }
 
+#[async_trait]
 impl IdentityProvider for BitwardenIdentityProvider {
-    fn identity(&self) -> &IdentityKeyPair {
-        &self.keypair
+    async fn identity(&self) -> IdentityKeyPair {
+        self.keypair.clone()
     }
 }
 
@@ -63,8 +68,7 @@ impl IdentityProvider for BitwardenIdentityProvider {
 
 /// DB-backed session store, scoped to a single `user_id` with `provider = "bitwarden"`.
 ///
-/// Sessions are cached in memory. Writes go through to the DB using
-/// `tokio::task::block_in_place` to bridge sync trait → async DB calls.
+/// Sessions are cached in memory. Writes go through to the DB directly via async calls.
 pub(crate) struct BitwardenSessionStore {
     pool: PgPool,
     user_id: String,
@@ -111,10 +115,8 @@ impl BitwardenSessionStore {
         }
     }
 
-    /// Persist the current connection data to DB (sync bridge).
-    fn write_through(&self, cd: &BitwardenConnectionData) {
-        let pool = self.pool.clone();
-        let user_id = self.user_id.clone();
+    /// Persist the current connection data to DB.
+    async fn write_through(&self, cd: &BitwardenConnectionData) {
         let json = match serde_json::to_value(cd) {
             Ok(v) => v,
             Err(e) => {
@@ -123,15 +125,11 @@ impl BitwardenSessionStore {
             }
         };
 
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                if let Err(e) =
-                    db::update_vault_connection_data(&pool, &user_id, "bitwarden", &json).await
-                {
-                    warn!(error = %e, "failed to write-through vault connection data");
-                }
-            });
-        });
+        if let Err(e) =
+            db::update_vault_connection_data(&self.pool, &self.user_id, "bitwarden", &json).await
+        {
+            warn!(error = %e, "failed to write-through vault connection data");
+        }
     }
 
     /// Build current `BitwardenConnectionData` from in-memory state.
@@ -151,14 +149,15 @@ impl BitwardenSessionStore {
     }
 }
 
+#[async_trait]
 impl SessionStore for BitwardenSessionStore {
-    fn has_session(&self, fingerprint: &IdentityFingerprint) -> bool {
+    async fn has_session(&self, fingerprint: &IdentityFingerprint) -> bool {
         self.session
             .as_ref()
             .is_some_and(|s| s.fingerprint == *fingerprint)
     }
 
-    fn list_sessions(&self) -> Vec<(IdentityFingerprint, Option<String>, u64, u64)> {
+    async fn list_sessions(&self) -> Vec<(IdentityFingerprint, Option<String>, u64, u64)> {
         self.session
             .iter()
             .map(|s| {
@@ -172,8 +171,11 @@ impl SessionStore for BitwardenSessionStore {
             .collect()
     }
 
-    fn cache_session(&mut self, fingerprint: IdentityFingerprint) -> Result<(), RemoteClientError> {
-        if self.has_session(&fingerprint) {
+    async fn cache_session(
+        &mut self,
+        fingerprint: IdentityFingerprint,
+    ) -> Result<(), RemoteClientError> {
+        if self.has_session(&fingerprint).await {
             return Ok(());
         }
 
@@ -185,12 +187,10 @@ impl SessionStore for BitwardenSessionStore {
             transport_state: None,
         });
 
-        // Write-through without key_data (we don't own it here).
-        // The full connectionData (including key_data) is written by the provider after pairing.
         Ok(())
     }
 
-    fn remove_session(
+    async fn remove_session(
         &mut self,
         fingerprint: &IdentityFingerprint,
     ) -> Result<(), RemoteClientError> {
@@ -204,12 +204,12 @@ impl SessionStore for BitwardenSessionStore {
         Ok(())
     }
 
-    fn clear(&mut self) -> Result<(), RemoteClientError> {
+    async fn clear(&mut self) -> Result<(), RemoteClientError> {
         self.session = None;
         Ok(())
     }
 
-    fn set_session_name(
+    async fn set_session_name(
         &mut self,
         fingerprint: &IdentityFingerprint,
         name: String,
@@ -222,7 +222,7 @@ impl SessionStore for BitwardenSessionStore {
         Ok(())
     }
 
-    fn update_last_connected(
+    async fn update_last_connected(
         &mut self,
         fingerprint: &IdentityFingerprint,
     ) -> Result<(), RemoteClientError> {
@@ -234,7 +234,7 @@ impl SessionStore for BitwardenSessionStore {
         Ok(())
     }
 
-    fn save_transport_state(
+    async fn save_transport_state(
         &mut self,
         fingerprint: &IdentityFingerprint,
         transport: MultiDeviceTransport,
@@ -248,13 +248,13 @@ impl SessionStore for BitwardenSessionStore {
 
                 // Write-through to DB (includes key_data so we don't null it out)
                 let cd = self.current_connection_data();
-                self.write_through(&cd);
+                self.write_through(&cd).await;
             }
         }
         Ok(())
     }
 
-    fn load_transport_state(
+    async fn load_transport_state(
         &self,
         fingerprint: &IdentityFingerprint,
     ) -> Result<Option<MultiDeviceTransport>, RemoteClientError> {
@@ -281,4 +281,82 @@ fn now_timestamp() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── BitwardenIdentityProvider ──────────────────────────────────────
+
+    #[test]
+    fn identity_provider_cose_round_trip() {
+        let provider = BitwardenIdentityProvider::generate();
+        let cose = provider.to_cose();
+        let restored = BitwardenIdentityProvider::from_cose(&cose).expect("should decode");
+        assert_eq!(provider.fingerprint(), restored.fingerprint());
+    }
+
+    #[test]
+    fn identity_provider_from_cose_invalid_bytes() {
+        assert!(BitwardenIdentityProvider::from_cose(&[0, 1, 2, 3]).is_err());
+    }
+
+    #[test]
+    fn identity_provider_clone_preserves_fingerprint() {
+        let provider = BitwardenIdentityProvider::generate();
+        let cloned = provider.clone_provider();
+        assert_eq!(provider.fingerprint(), cloned.fingerprint());
+    }
+
+    // ── BitwardenSessionStore construction ─────────────────────────────
+
+    fn fake_pool() -> PgPool {
+        sqlx::PgPool::connect_lazy("postgres://fake").expect("lazy pool")
+    }
+
+    #[tokio::test]
+    async fn session_store_new_without_connection_data() {
+        let store = BitwardenSessionStore::new(fake_pool(), "user1".into(), None, None);
+        assert!(store.session.is_none());
+    }
+
+    #[tokio::test]
+    async fn session_store_new_with_valid_connection_data() {
+        let fp = hex::encode([42u8; 32]);
+        let cd = BitwardenConnectionData {
+            fingerprint: Some(fp.clone()),
+            key_data: Some(vec![1, 2, 3]),
+            transport_state: Some(vec![4, 5, 6]),
+        };
+        let store =
+            BitwardenSessionStore::new(fake_pool(), "user1".into(), Some(vec![1, 2, 3]), Some(&cd));
+
+        let session = store.session.as_ref().expect("should have session");
+        assert_eq!(hex::encode(session.fingerprint.0), fp);
+        assert_eq!(session.transport_state, Some(vec![4, 5, 6]));
+    }
+
+    #[tokio::test]
+    async fn session_store_new_with_bad_fingerprint_returns_no_session() {
+        let cd = BitwardenConnectionData {
+            fingerprint: Some("not_valid_hex".into()),
+            key_data: Some(vec![1]),
+            transport_state: None,
+        };
+        let store = BitwardenSessionStore::new(fake_pool(), "user1".into(), None, Some(&cd));
+        assert!(store.session.is_none());
+    }
+
+    #[tokio::test]
+    async fn current_connection_data_includes_key_data() {
+        let key_data = vec![10, 20, 30];
+        let store =
+            BitwardenSessionStore::new(fake_pool(), "user1".into(), Some(key_data.clone()), None);
+
+        let cd = store.current_connection_data();
+        assert_eq!(cd.key_data, Some(key_data));
+        assert!(cd.fingerprint.is_none());
+        assert!(cd.transport_state.is_none());
+    }
 }

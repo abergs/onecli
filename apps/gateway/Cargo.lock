@@ -85,9 +85,9 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "ap-client"
-version = "0.3.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "275f68d32b9be5e62f8520b58f3553b51b723b84afb29bf38b3dcc8cb5594fa8"
+checksum = "3142747016fc72fc73712449e26ac4e4b43997261dc2c107b9301f461f430f71"
 dependencies = [
  "ap-error",
  "ap-noise",
@@ -108,18 +108,18 @@ dependencies = [
 
 [[package]]
 name = "ap-error"
-version = "0.3.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2a3990d85208d59099f168fe123993dcb1c4f8bfd5265908a62ba57200e73fd"
+checksum = "71114cd04eecb5661100b8b435b7e2cf068803786b627b001f7516134dc67d07"
 dependencies = [
  "ap-error-macro",
 ]
 
 [[package]]
 name = "ap-error-macro"
-version = "0.3.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae10d9755d963bf377773da208feb94ec43f0a3cc2717d7e7929cc88ed70f885"
+checksum = "859914e6182474dda316e2c07e7f95a22d2a0662ae2108b54b2a881088697b7c"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -129,9 +129,9 @@ dependencies = [
 
 [[package]]
 name = "ap-noise"
-version = "0.3.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c887e813f190cb5f841b96b223f12bda7a7c72ce52d87b00799ff8db2b892c95"
+checksum = "71455160682aafafced3b8272f0f53d6dceb7376a86ae8c1368b3e76bd6bc917"
 dependencies = [
  "ap-error",
  "base64",
@@ -151,9 +151,9 @@ dependencies = [
 
 [[package]]
 name = "ap-proxy-client"
-version = "0.3.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1533e2380223480c0d19af139bb0a9e8228c9dad698795e692bc31eac572ed20"
+checksum = "1cbf5f5a3cf908e5022b963119db8fc6395df0385a4d0298ec434172947ba5c3"
 dependencies = [
  "ap-proxy-protocol",
  "futures-util",
@@ -165,9 +165,9 @@ dependencies = [
 
 [[package]]
 name = "ap-proxy-protocol"
-version = "0.3.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "603e498bbcb1f22e6953b280c2a6af5b5e6928072760c525bbbd4771c4e4bedc"
+checksum = "e0cf836fec1baf259a078efda82c0a53839413236d71ba9c86413e35b2ae5000"
 dependencies = [
  "ap-error",
  "coset",
