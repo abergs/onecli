@@ -90,11 +90,11 @@ export const SecretsContent = () => {
           ))
         )}
 
-      <SecretDialog
-        open={createOpen}
-        onOpenChange={setCreateOpen}
-        onSaved={fetchSecrets}
-      />
+        <SecretDialog
+          open={createOpen}
+          onOpenChange={setCreateOpen}
+          onSaved={fetchSecrets}
+        />
       </section>
 
       <section className="space-y-4">
